@@ -1,0 +1,90 @@
+name: Send Push Notification via Bark
+
+on:
+  push:
+    branches: # 指定你想要监控的分支
+      - main
+      # - master # 如果你的主分支是 master
+      # - develop # 或者其他分支
+
+jobs:
+  notify_via_bark:
+    runs-on: ubuntu-latest # 使用最新的 ubuntu runner
+    steps:
+      - name: Prepare Notification Content
+        id: prep_content
+        run: |
+          REPO_NAME="${{ github.repository }}"
+          BRANCH_NAME="${{ github.ref_name }}" # e.g., refs/heads/main -> main
+          COMMIT_SHA_SHORT=$(echo "${{ github.sha }}" | cut -c1-7)
+          COMMIT_MSG_FULL=$(git log -1 --pretty=%B "${{ github.sha }}") # 需要 git 来获取 commit message
+          COMMIT_MSG_SUMMARY=$(echo "$COMMIT_MSG_FULL" | head -n 1) # 只取 commit message 的第一行
+          PUSHER_NAME="${{ github.actor }}"
+          COMMIT_URL="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+
+          # 构建 Bark 推送的标题 (可选, Bark 支持通过 URL 参数设置)
+          BARK_TITLE="GitHub: $REPO_NAME Updated"
+
+          # 构建 Bark 推送的主体内容 (这里可以包含换行符 \n)
+          BARK_BODY="Branch: $BRANCH_NAME by $PUSHER_NAME
+          Commit: $COMMIT_SHA_SHORT
+          Message: $COMMIT_MSG_SUMMARY"
+
+          # 将准备好的内容设置为输出变量，以便后续步骤使用
+          # 我们需要对这些内容进行 URL 编码，因为它们将作为 URL 的一部分
+          # 使用 jq 的 @uri 功能进行 URL 编码
+          echo "bark_title_encoded=$(printf %s "$BARK_TITLE" | jq -sRr @uri)" >> $GITHUB_OUTPUT
+          echo "bark_body_encoded_for_path=$(printf %s "$BARK_BODY" | jq -sRr @uri)" >> $GITHUB_OUTPUT # 用于路径部分
+          echo "commit_url_encoded=$(printf %s "$COMMIT_URL" | jq -sRr @uri)" >> $GITHUB_OUTPUT
+        # 注意: GITHUB_TOKEN 默认就有权限读取 commit 信息, 无需显式 checkout 代码库，除非你需要访问代码库中的其他文件。
+        # `git log` 命令能在此上下文中工作。
+
+      - name: Send Bark Notification
+        env:
+          BARK_SERVER_URL: ${{ secrets.BARK_URL }}
+          BARK_DEVICE_KEY: ${{ secrets.BARK_DEVICE_KEY }}
+        run: |
+          # 检查 Secrets 是否已设置
+          if [ -z "$BARK_SERVER_URL" ] || [ -z "$BARK_DEVICE_KEY" ]; then
+            echo "Error: BARK_URL or BARK_DEVICE_KEY secret not set."
+            exit 1
+          fi
+
+          # 从上一步获取编码后的内容
+          TITLE_ENCODED="${{ steps.prep_content.outputs.bark_title_encoded }}"
+          BODY_ENCODED_FOR_PATH="${{ steps.prep_content.outputs.bark_body_encoded_for_path }}" # 这个是放到路径里的
+          COMMIT_URL_ENCODED="${{ steps.prep_content.outputs.commit_url_encoded }}"
+
+          # 构建 Bark 请求 URL
+          # 格式: <BARK_URL>/<DEVICE_KEY>/<推送内容URL编码后的文本>
+          # 我们可以将主要内容放在路径中，其他参数如 title, url, group, copy 等放在查询参数中
+
+          BARK_REQUEST_URL="${BARK_SERVER_URL}/${BARK_DEVICE_KEY}/${BODY_ENCODED_FOR_PATH}"
+
+          # 添加其他有用的 Bark 参数作为查询参数
+          # title: 标题
+          # url: 点击通知后跳转的链接
+          # group: 通知分组
+          # copy: 点击通知后自动复制内容 (内容为 body)
+          # isArchive=1: 自动保存到历史记录
+          # sound: 提示音 (例如: bell, glass, horn, etc.)
+          BARK_REQUEST_URL="${BARK_REQUEST_URL}?title=${TITLE_ENCODED}"
+          BARK_REQUEST_URL="${BARK_REQUEST_URL}&url=${COMMIT_URL_ENCODED}"
+          BARK_REQUEST_URL="${BARK_REQUEST_URL}&group=GitHub" # 给通知分组
+          BARK_REQUEST_URL="${BARK_REQUEST_URL}&copy=1"
+          BARK_REQUEST_URL="${BARK_REQUEST_URL}&isArchive=1"
+          # BARK_REQUEST_URL="${BARK_REQUEST_URL}&sound=bell" # 如果需要特定提示音
+
+          echo "Sending notification to Bark..."
+          echo "Request URL (DEBUG): ${BARK_REQUEST_URL}" # 调试时可以查看，生产环境注意不要泄露 key
+
+          # 使用 curl 发送 GET 请求
+          HTTP_RESPONSE_CODE=$(curl -X GET "${BARK_REQUEST_URL}" -o /dev/null -s -w "%{http_code}")
+
+          if [ "$HTTP_RESPONSE_CODE" -eq 200 ]; then
+            echo "Bark notification sent successfully (HTTP $HTTP_RESPONSE_CODE)."
+          else
+            echo "Error sending Bark notification (HTTP $HTTP_RESPONSE_CODE)."
+            # 可以考虑打印更多错误信息，但注意URL中可能包含敏感内容
+            exit 1
+          fi

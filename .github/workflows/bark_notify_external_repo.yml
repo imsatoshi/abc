@@ -1,0 +1,135 @@
+name: Monitor External Repo and Notify via Bark
+
+on:
+  schedule:
+    # 每 15 分钟运行一次 (你可以根据需要调整频率)
+    # 注意：GitHub Actions 的 schedule 触发器有最小频率限制，过于频繁可能不会精确执行或被临时禁用
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # 允许手动触发，方便测试
+
+jobs:
+  check_and_notify:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_REPO_OWNER: "iterativv"
+      TARGET_REPO_NAME: "NostalgiaForInfinity"
+      TARGET_BRANCH: "master"
+      LAST_SHA_FILE: "last_seen_sha_for_NostalgiaForInfinity.txt"
+      ARTIFACT_NAME: "nostalgiaforinfinity-monitor-state"
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40a3d6 # v2.8.1
+        with:
+          egress-policy: audit # TODO: change to 'egress-policy: block' after couple of runs
+
+      - name: Checkout code (to access jq if needed, or for local tools)
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Download last seen SHA
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ./ # 下载到当前工作目录
+        # 如果 artifact 不存在 (例如首次运行)，这一步会失败但 workflow 不会中止 (continue-on-error 默认false，但download-artifact v3+当文件不存在时不报错)
+        # 我们需要手动检查文件是否存在
+
+      - name: Read last seen SHA from file
+        id: get_old_sha
+        run: |
+          if [ -f "${{ env.LAST_SHA_FILE }}" ]; then
+            OLD_SHA=$(cat "${{ env.LAST_SHA_FILE }}")
+            echo "Found last seen SHA: $OLD_SHA"
+          else
+            OLD_SHA=""
+            echo "No last seen SHA file found. Will notify on current commit if any."
+          fi
+          echo "old_sha=$OLD_SHA" >> $GITHUB_OUTPUT
+
+      - name: Get latest commit SHA from external repository
+        id: get_new_sha
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用 GITHUB_TOKEN 进行认证，以获得更高的 API 速率限制
+        run: |
+          API_URL="https://api.github.com/repos/${{ env.TARGET_REPO_OWNER }}/${{ env.TARGET_REPO_NAME }}/commits/${{ env.TARGET_BRANCH }}"
+          echo "Fetching from API: $API_URL"
+          RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.v3+json" "$API_URL")
+
+          NEW_SHA=$(echo "$RESPONSE" | jq -r '.sha')
+          COMMIT_MSG_FULL=$(echo "$RESPONSE" | jq -r '.commit.message')
+          COMMIT_MSG_SUMMARY=$(echo "$COMMIT_MSG_FULL" | head -n 1)
+          PUSHER_NAME=$(echo "$RESPONSE" | jq -r '.commit.author.name') # API返回的是 author，不是 pusher
+          COMMIT_URL=$(echo "$RESPONSE" | jq -r '.html_url')
+
+          if [ -z "$NEW_SHA" ] || [ "$NEW_SHA" == "null" ]; then
+            echo "Error: Could not retrieve new SHA. API Response:"
+            echo "$RESPONSE"
+            exit 1
+          fi
+
+          echo "Current latest SHA: $NEW_SHA"
+          echo "new_sha=$NEW_SHA" >> $GITHUB_OUTPUT
+          echo "commit_msg_summary<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMIT_MSG_SUMMARY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "pusher_name=$PUSHER_NAME" >> $GITHUB_OUTPUT
+          echo "commit_url=$COMMIT_URL" >> $GITHUB_OUTPUT
+
+      - name: Compare SHAs and send Bark notification if new
+        if: steps.get_old_sha.outputs.old_sha != steps.get_new_sha.outputs.new_sha
+        env:
+          BARK_SERVER_URL: ${{ secrets.BARK_URL }} # 从 secrets 获取
+          BARK_DEVICE_KEY: ${{ secrets.BARK_DEVICE_KEY }} # 从 secrets 获取
+          NEW_SHA: ${{ steps.get_new_sha.outputs.new_sha }}
+          COMMIT_MSG_SUMMARY: ${{ steps.get_new_sha.outputs.commit_msg_summary }}
+          PUSHER_NAME: ${{ steps.get_new_sha.outputs.pusher_name }}
+          COMMIT_URL: ${{ steps.get_new_sha.outputs.commit_url }}
+        run: |
+          echo "New commit detected. Old SHA: ${{ steps.get_old_sha.outputs.old_sha }}, New SHA: $NEW_SHA"
+          echo "Sending Bark notification..."
+
+          if [ -z "$BARK_SERVER_URL" ] || [ -z "$BARK_DEVICE_KEY" ]; then
+            echo "Error: BARK_URL or BARK_DEVICE_KEY secret not set."
+            exit 1
+          fi
+
+          BARK_TITLE_TEXT="GitHub: ${{ env.TARGET_REPO_OWNER }}/${{ env.TARGET_REPO_NAME }} Updated"
+          BARK_BODY_TEXT="Branch: ${{ env.TARGET_BRANCH }} by $PUSHER_NAME
+          Commit: $(echo "$NEW_SHA" | cut -c1-7)
+          Message: $COMMIT_MSG_SUMMARY"
+
+          # URL 编码
+          BARK_TITLE_ENCODED=$(printf %s "$BARK_TITLE_TEXT" | jq -sRr @uri)
+          BARK_BODY_ENCODED_FOR_PATH=$(printf %s "$BARK_BODY_TEXT" | jq -sRr @uri)
+          COMMIT_URL_ENCODED=$(printf %s "$COMMIT_URL" | jq -sRr @uri)
+
+          BARK_REQUEST_URL="${BARK_SERVER_URL}/${BARK_DEVICE_KEY}/${BARK_BODY_ENCODED_FOR_PATH}"
+          BARK_REQUEST_URL="${BARK_REQUEST_URL}?title=${BARK_TITLE_ENCODED}"
+          BARK_REQUEST_URL="${BARK_REQUEST_URL}&url=${COMMIT_URL_ENCODED}"
+          BARK_REQUEST_URL="${BARK_REQUEST_URL}&group=GitHubUpdates"
+          BARK_REQUEST_URL="${BARK_REQUEST_URL}&copy=1"
+          BARK_REQUEST_URL="${BARK_REQUEST_URL}&isArchive=1"
+          # BARK_REQUEST_URL="${BARK_REQUEST_URL}&sound=minuet" # 可选：自定义提示音
+
+          echo "Bark Request URL (DEBUG): ${BARK_REQUEST_URL}"
+
+          HTTP_RESPONSE_CODE=$(curl -X GET "${BARK_REQUEST_URL}" -o /dev/null -s -w "%{http_code}")
+
+          if [ "$HTTP_RESPONSE_CODE" -eq 200 ]; then
+            echo "Bark notification sent successfully (HTTP $HTTP_RESPONSE_CODE)."
+          else
+            echo "Error sending Bark notification (HTTP $HTTP_RESPONSE_CODE)."
+            exit 1
+          fi
+
+      - name: Update last seen SHA file
+        run: |
+          echo "${{ steps.get_new_sha.outputs.new_sha }}" > "${{ env.LAST_SHA_FILE }}"
+          echo "Updated ${{ env.LAST_SHA_FILE }} with SHA: ${{ steps.get_new_sha.outputs.new_sha }}"
+
+      - name: Upload updated SHA file as artifact
+        uses: actions/upload-artifact@8349ce5342259a82ff9530664fd13530b4e60ae7 # v4.3.6
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.LAST_SHA_FILE }}
+          retention-days: 7 # Artifact 保存7天，对于这种场景足够了
