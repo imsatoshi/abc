@@ -13,7 +13,7 @@ jobs:
     env:
       TARGET_REPO_OWNER: "iterativv"
       TARGET_REPO_NAME: "NostalgiaForInfinity"
-      TARGET_BRANCH: "master"
+      TARGET_BRANCH: "main"  # 改为 main 分支
       LAST_SHA_FILE: "last_seen_sha_for_NostalgiaForInfinity.txt"
       ARTIFACT_NAME: "nostalgiaforinfinity-monitor-state"
 
@@ -27,12 +27,12 @@ jobs:
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
       - name: Download last seen SHA
-        uses: actions/download-artifact@v4  # 统一使用 v4 版本
+        uses: actions/download-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
-          path: ./ # 下载到当前工作目录
-        continue-on-error: true  # 首次运行时不报错
-        # 如果 artifact 不存在 (例如首次运行)，这一步会继续执行
+          path: ./
+        continue-on-error: true
+        # 首次运行时没有 artifact 是正常的，忽略错误
 
       - name: Read last seen SHA from file
         id: get_old_sha
@@ -62,9 +62,32 @@ jobs:
           COMMIT_URL=$(echo "$RESPONSE" | jq -r '.html_url')
 
           if [ -z "$NEW_SHA" ] || [ "$NEW_SHA" == "null" ]; then
-            echo "Error: Could not retrieve new SHA. API Response:"
+            echo "::error::Could not retrieve new SHA. API Response:"
             echo "$RESPONSE"
-            exit 1
+            echo "Trying to get default branch..."
+            
+            # 尝试获取仓库的默认分支
+            REPO_INFO=$(curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${{ env.TARGET_REPO_OWNER }}/${{ env.TARGET_REPO_NAME }}")
+            DEFAULT_BRANCH=$(echo "$REPO_INFO" | jq -r '.default_branch')
+            
+            if [ -n "$DEFAULT_BRANCH" ] && [ "$DEFAULT_BRANCH" != "null" ]; then
+              echo "Found default branch: $DEFAULT_BRANCH"
+              echo "Trying with default branch..."
+              RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${{ env.TARGET_REPO_OWNER }}/${{ env.TARGET_REPO_NAME }}/commits/$DEFAULT_BRANCH")
+              NEW_SHA=$(echo "$RESPONSE" | jq -r '.sha')
+              
+              if [ -n "$NEW_SHA" ] && [ "$NEW_SHA" != "null" ]; then
+                echo "Successfully got SHA from default branch"
+                # 更新环境变量
+                echo "TARGET_BRANCH=$DEFAULT_BRANCH" >> $GITHUB_ENV
+              else
+                echo "::error::Failed to get SHA from default branch"
+                exit 1
+              fi
+            else
+              echo "::error::Could not determine default branch"
+              exit 1
+            fi
           fi
 
           echo "Current latest SHA: $NEW_SHA"
