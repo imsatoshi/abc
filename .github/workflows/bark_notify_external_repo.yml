@@ -27,12 +27,12 @@ jobs:
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
       - name: Download last seen SHA
-        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        uses: actions/download-artifact@v4  # 统一使用 v4 版本
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ./ # 下载到当前工作目录
-        # 如果 artifact 不存在 (例如首次运行)，这一步会失败但 workflow 不会中止 (continue-on-error 默认false，但download-artifact v3+当文件不存在时不报错)
-        # 我们需要手动检查文件是否存在
+        continue-on-error: true  # 首次运行时不报错
+        # 如果 artifact 不存在 (例如首次运行)，这一步会继续执行
 
       - name: Read last seen SHA from file
         id: get_old_sha
@@ -42,7 +42,7 @@ jobs:
             echo "Found last seen SHA: $OLD_SHA"
           else
             OLD_SHA=""
-            echo "No last seen SHA file found. Will notify on current commit if any."
+            echo "No last seen SHA file found. This is normal for first run."
           fi
           echo "old_sha=$OLD_SHA" >> $GITHUB_OUTPUT
 
@@ -126,10 +126,14 @@ jobs:
         run: |
           echo "${{ steps.get_new_sha.outputs.new_sha }}" > "${{ env.LAST_SHA_FILE }}"
           echo "Updated ${{ env.LAST_SHA_FILE }} with SHA: ${{ steps.get_new_sha.outputs.new_sha }}"
+          echo "File content: $(cat \"${{ env.LAST_SHA_FILE }}\")"
 
       - name: Upload updated SHA file as artifact
-        uses: actions/upload-artifact@v4 # v4.3.6
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.LAST_SHA_FILE }}
-          retention-days: 7 # Artifact 保存7天，对于这种场景足够了
+          retention-days: 7
+          if-no-files-found: error
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 确保有足够的权限上传 artifact
