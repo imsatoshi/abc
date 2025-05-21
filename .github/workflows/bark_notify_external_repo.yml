@@ -128,7 +128,7 @@ jobs:
           echo "Updated ${{ env.LAST_SHA_FILE }} with SHA: ${{ steps.get_new_sha.outputs.new_sha }}"
 
       - name: Upload updated SHA file as artifact
-        uses: actions/upload-artifact@8349ce5342259a82ff9530664fd13530b4e60ae7 # v4.3.6
+        uses: actions/upload-artifact@v4 # v4.3.6
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.LAST_SHA_FILE }}
