@@ -98,6 +98,16 @@ jobs:
           echo "pusher_name=$PUSHER_NAME" >> $GITHUB_OUTPUT
           echo "commit_url=$COMMIT_URL" >> $GITHUB_OUTPUT
 
+      - name: Debug SHA values
+        run: |
+          echo "Old SHA: '${{ steps.get_old_sha.outputs.old_sha }}'"
+          echo "New SHA: '${{ steps.get_new_sha.outputs.new_sha }}'"
+          echo "Are they different? $([ "${{ steps.get_old_sha.outputs.old_sha }}" != "${{ steps.get_new_sha.outputs.new_sha }}" ] && echo "Yes" || echo "No")"
+          echo "SHA file exists? $([ -f "${{ env.LAST_SHA_FILE }}" ] && echo "Yes" || echo "No")"
+          if [ -f "${{ env.LAST_SHA_FILE }}" ]; then
+            echo "SHA file content: $(cat ${{ env.LAST_SHA_FILE }})"
+          fi
+
       - name: Compare SHAs and send Bark notification if new
         if: steps.get_old_sha.outputs.old_sha != steps.get_new_sha.outputs.new_sha
         env:
@@ -147,9 +157,29 @@ jobs:
 
       - name: Update last seen SHA file
         run: |
-          echo "${{ steps.get_new_sha.outputs.new_sha }}" > "${{ env.LAST_SHA_FILE }}"
+          # 移除多余的引号，直接使用变量
+          echo "${{ steps.get_new_sha.outputs.new_sha }}" > ${{ env.LAST_SHA_FILE }}
           echo "Updated ${{ env.LAST_SHA_FILE }} with SHA: ${{ steps.get_new_sha.outputs.new_sha }}"
-          echo "File content: $(cat \"${{ env.LAST_SHA_FILE }}\")"
+          # 检查文件是否存在
+          if [ -f "${{ env.LAST_SHA_FILE }}" ]; then
+            echo "File exists. Content: $(cat ${{ env.LAST_SHA_FILE }})"
+          else
+            echo "ERROR: File does not exist after writing!"
+            ls -la
+          fi
+
+      - name: Verify file exists before upload
+        run: |
+          if [ -f "${{ env.LAST_SHA_FILE }}" ]; then
+            echo "File exists and ready for upload"
+            ls -la ${{ env.LAST_SHA_FILE }}
+            cat ${{ env.LAST_SHA_FILE }}
+          else
+            echo "ERROR: File does not exist before upload!"
+            echo "Creating file with current SHA as fallback"
+            echo "${{ steps.get_new_sha.outputs.new_sha }}" > ${{ env.LAST_SHA_FILE }}
+            ls -la ${{ env.LAST_SHA_FILE }}
+          fi
 
       - name: Upload updated SHA file as artifact
         uses: actions/upload-artifact@v4
@@ -159,4 +189,4 @@ jobs:
           retention-days: 7
           if-no-files-found: error
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 确保有足够的权限上传 artifact
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
