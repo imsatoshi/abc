@@ -27,6 +27,7 @@ jobs:
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
       - name: Download last seen SHA
+        id: download_artifact
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
@@ -39,6 +40,8 @@ jobs:
         run: |
           if [ -f "${{ env.LAST_SHA_FILE }}" ]; then
             OLD_SHA=$(cat "${{ env.LAST_SHA_FILE }}")
+            # Trim any whitespace
+            OLD_SHA=$(echo "$OLD_SHA" | xargs)
             echo "Found last seen SHA: $OLD_SHA"
           else
             OLD_SHA=""
@@ -109,7 +112,8 @@ jobs:
           fi
 
       - name: Compare SHAs and send Bark notification if new
-        if: steps.get_old_sha.outputs.old_sha != steps.get_new_sha.outputs.new_sha
+        # Only send notification if old SHA exists and is different from new SHA
+        if: steps.get_old_sha.outputs.old_sha != '' && steps.get_old_sha.outputs.old_sha != steps.get_new_sha.outputs.new_sha
         env:
           BARK_SERVER_URL: ${{ secrets.BARK_URL }} # 从 secrets 获取
           BARK_DEVICE_KEY: ${{ secrets.BARK_DEVICE_KEY }} # 从 secrets 获取
@@ -157,12 +161,15 @@ jobs:
 
       - name: Update last seen SHA file
         run: |
-          # 移除多余的引号，直接使用变量
-          echo "${{ steps.get_new_sha.outputs.new_sha }}" > ${{ env.LAST_SHA_FILE }}
+          # Always update the SHA file with the new SHA, regardless of whether we sent a notification
+          # This ensures we have the latest SHA for the next run
+          echo "${{ steps.get_new_sha.outputs.new_sha }}" > "${{ env.LAST_SHA_FILE }}"
           echo "Updated ${{ env.LAST_SHA_FILE }} with SHA: ${{ steps.get_new_sha.outputs.new_sha }}"
           # 检查文件是否存在
           if [ -f "${{ env.LAST_SHA_FILE }}" ]; then
             echo "File exists. Content: $(cat ${{ env.LAST_SHA_FILE }})"
+            # Ensure file has proper permissions
+            chmod 644 "${{ env.LAST_SHA_FILE }}"
           else
             echo "ERROR: File does not exist after writing!"
             ls -la
@@ -182,6 +189,7 @@ jobs:
           fi
 
       - name: Upload updated SHA file as artifact
+        id: upload_artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
@@ -190,3 +198,8 @@ jobs:
           if-no-files-found: error
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Verify artifact upload
+        run: |
+          echo "Artifact upload status: ${{ steps.upload_artifact.outcome }}"
+          echo "If the upload failed, the SHA won't be saved for the next run"
