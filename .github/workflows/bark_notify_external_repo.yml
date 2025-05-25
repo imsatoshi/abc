@@ -16,6 +16,8 @@ jobs:
       TARGET_BRANCH: "main"  # 改为 main 分支
       LAST_SHA_FILE: "last_seen_sha_for_NostalgiaForInfinity.txt"
       ARTIFACT_NAME: "nostalgiaforinfinity-monitor-state"
+      # 添加工作目录环境变量，确保文件路径一致性
+      WORKSPACE: "${{ github.workspace }}"
 
     steps:
       - name: Harden Runner
@@ -31,15 +33,26 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
-          path: ./
+          path: ${{ env.WORKSPACE }}
         continue-on-error: true
         # 首次运行时没有 artifact 是正常的，忽略错误
+        
+      - name: Debug artifact download
+        run: |
+          echo "Artifact download status: ${{ steps.download_artifact.outcome }}"
+          echo "Files in workspace directory:"
+          ls -la ${{ env.WORKSPACE }}
+          echo "Looking for SHA file:"
+          find ${{ env.WORKSPACE }} -name "${{ env.LAST_SHA_FILE }}" -type f || echo "SHA file not found"
 
       - name: Read last seen SHA from file
         id: get_old_sha
         run: |
-          if [ -f "${{ env.LAST_SHA_FILE }}" ]; then
-            OLD_SHA=$(cat "${{ env.LAST_SHA_FILE }}")
+          SHA_FILE_PATH="${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}"
+          echo "Looking for SHA file at: $SHA_FILE_PATH"
+          
+          if [ -f "$SHA_FILE_PATH" ]; then
+            OLD_SHA=$(cat "$SHA_FILE_PATH")
             # Trim any whitespace
             OLD_SHA=$(echo "$OLD_SHA" | xargs)
             echo "Found last seen SHA: $OLD_SHA"
@@ -163,29 +176,44 @@ jobs:
         run: |
           # Always update the SHA file with the new SHA, regardless of whether we sent a notification
           # This ensures we have the latest SHA for the next run
-          echo "${{ steps.get_new_sha.outputs.new_sha }}" > "${{ env.LAST_SHA_FILE }}"
-          echo "Updated ${{ env.LAST_SHA_FILE }} with SHA: ${{ steps.get_new_sha.outputs.new_sha }}"
+          SHA_FILE_PATH="${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}"
+          echo "${{ steps.get_new_sha.outputs.new_sha }}" > "$SHA_FILE_PATH"
+          echo "Updated $SHA_FILE_PATH with SHA: ${{ steps.get_new_sha.outputs.new_sha }}"
+          
           # 检查文件是否存在
-          if [ -f "${{ env.LAST_SHA_FILE }}" ]; then
-            echo "File exists. Content: $(cat ${{ env.LAST_SHA_FILE }})"
+          if [ -f "$SHA_FILE_PATH" ]; then
+            echo "File exists. Content: $(cat $SHA_FILE_PATH)"
             # Ensure file has proper permissions
-            chmod 644 "${{ env.LAST_SHA_FILE }}"
+            chmod 644 "$SHA_FILE_PATH"
           else
             echo "ERROR: File does not exist after writing!"
-            ls -la
+            ls -la ${{ env.WORKSPACE }}
+            # 尝试在当前目录创建文件作为备份
+            echo "${{ steps.get_new_sha.outputs.new_sha }}" > "${{ env.LAST_SHA_FILE }}"
+            echo "Created backup file in current directory"
           fi
 
       - name: Verify file exists before upload
         run: |
-          if [ -f "${{ env.LAST_SHA_FILE }}" ]; then
-            echo "File exists and ready for upload"
-            ls -la ${{ env.LAST_SHA_FILE }}
-            cat ${{ env.LAST_SHA_FILE }}
+          SHA_FILE_PATH="${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}"
+          
+          if [ -f "$SHA_FILE_PATH" ]; then
+            echo "File exists at $SHA_FILE_PATH and ready for upload"
+            ls -la "$SHA_FILE_PATH"
+            cat "$SHA_FILE_PATH"
           else
-            echo "ERROR: File does not exist before upload!"
-            echo "Creating file with current SHA as fallback"
-            echo "${{ steps.get_new_sha.outputs.new_sha }}" > ${{ env.LAST_SHA_FILE }}
-            ls -la ${{ env.LAST_SHA_FILE }}
+            echo "ERROR: File does not exist at $SHA_FILE_PATH before upload!"
+            echo "Checking current directory..."
+            
+            if [ -f "${{ env.LAST_SHA_FILE }}" ]; then
+              echo "File exists in current directory, using it"
+              cp "${{ env.LAST_SHA_FILE }}" "$SHA_FILE_PATH"
+            else
+              echo "Creating file with current SHA as fallback"
+              echo "${{ steps.get_new_sha.outputs.new_sha }}" > "$SHA_FILE_PATH"
+            fi
+            
+            ls -la "$SHA_FILE_PATH"
           fi
 
       - name: Upload updated SHA file as artifact
@@ -193,8 +221,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
-          path: ${{ env.LAST_SHA_FILE }}
-          retention-days: 7
+          path: ${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}
+          retention-days: 90  # 增加保留期限到最大值
           if-no-files-found: error
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -203,3 +231,10 @@ jobs:
         run: |
           echo "Artifact upload status: ${{ steps.upload_artifact.outcome }}"
           echo "If the upload failed, the SHA won't be saved for the next run"
+          echo "Artifact ID: ${{ steps.upload_artifact.outputs.artifact-id }}"
+          
+          # 最终确认
+          echo "Final workspace state:"
+          ls -la ${{ env.WORKSPACE }}
+          echo "SHA file final state:"
+          find ${{ env.WORKSPACE }} -name "${{ env.LAST_SHA_FILE }}" -exec ls -la {} \; -exec cat {} \; || echo "SHA file not found"
