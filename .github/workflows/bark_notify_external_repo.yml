@@ -20,6 +20,8 @@ jobs:
 
       - name: Checkout code (to access jq if needed, or for local tools)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Get recent commits from external repository
         id: get_commits
@@ -76,12 +78,42 @@ jobs:
           # 检查提交时间，如果在过去6小时内，则发送通知
           HOURS_THRESHOLD=6
           HOURS_DIFF=${{ steps.get_commits.outputs.hours_diff }}
+          LATEST_SHA=${{ steps.get_commits.outputs.latest_sha }}
           
-          if [ "$HOURS_DIFF" -le "$HOURS_THRESHOLD" ]; then
-            echo "最新提交在 $HOURS_DIFF 小时前，在阈值 $HOURS_THRESHOLD 小时内，将发送通知"
-            echo "should_notify=true" >> $GITHUB_OUTPUT
+          # 创建已通知提交记录文件的路径
+          NOTIFIED_FILE=".github/notified_commits.txt"
+          
+          # 检查提交是否已经通知过
+          ALREADY_NOTIFIED=false
+          if [ -f "$NOTIFIED_FILE" ]; then
+            if grep -q "$LATEST_SHA" "$NOTIFIED_FILE"; then
+              ALREADY_NOTIFIED=true
+              echo "提交 $LATEST_SHA 已经通知过，不重复发送"
+            fi
           else
-            echo "最新提交在 $HOURS_DIFF 小时前，超过阈值 $HOURS_THRESHOLD 小时，不发送通知"
+            # 如果文件不存在，创建目录
+            mkdir -p "$(dirname "$NOTIFIED_FILE")"
+            touch "$NOTIFIED_FILE"
+            echo "创建新的通知记录文件"
+          fi
+          
+          # 判断是否需要发送通知
+          if [ "$HOURS_DIFF" -le "$HOURS_THRESHOLD" ] && [ "$ALREADY_NOTIFIED" = "false" ]; then
+            echo "最新提交在 $HOURS_DIFF 小时前，在阈值 $HOURS_THRESHOLD 小时内，且未通知过，将发送通知"
+            echo "should_notify=true" >> $GITHUB_OUTPUT
+            # 记录已通知的提交
+            echo "$LATEST_SHA" >> "$NOTIFIED_FILE"
+            # 保留最近的50条记录，避免文件过大
+            if [ $(wc -l < "$NOTIFIED_FILE") -gt 50 ]; then
+              echo "裁剪记录文件，只保留最近的50条记录"
+              tail -n 50 "$NOTIFIED_FILE" > "${NOTIFIED_FILE}.tmp" && mv "${NOTIFIED_FILE}.tmp" "$NOTIFIED_FILE"
+            fi
+          else
+            if [ "$ALREADY_NOTIFIED" = "true" ]; then
+              echo "提交已经通知过，不重复发送"
+            else
+              echo "最新提交在 $HOURS_DIFF 小时前，超过阈值 $HOURS_THRESHOLD 小时，不发送通知"
+            fi
             echo "should_notify=false" >> $GITHUB_OUTPUT
           fi
 
