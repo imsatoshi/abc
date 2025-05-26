@@ -2,9 +2,8 @@ name: Monitor External Repo and Notify via Bark
 
 on:
   schedule:
-    # 每 15 分钟运行一次 (你可以根据需要调整频率)
-    # 注意：GitHub Actions 的 schedule 触发器有最小频率限制，过于频繁可能不会精确执行或被临时禁用
-    - cron: '*/15 * * * *'
+    # 每小时运行一次，在整点运行
+    - cron: '0 * * * *'
   workflow_dispatch: # 允许手动触发，方便测试
 
 jobs:
@@ -14,112 +13,87 @@ jobs:
       TARGET_REPO_OWNER: "iterativv"
       TARGET_REPO_NAME: "NostalgiaForInfinity"
       TARGET_BRANCH: "main"  # 目标分支
-      CHECK_COMMITS_COUNT: "5"  # 检查最近的5条提交
+      HOURS_THRESHOLD: "6"   # 检查过去6小时的提交
 
     steps:
 
-      - name: Checkout code (to access jq if needed, or for local tools)
+      - name: Checkout code (to access jq if needed)
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get recent commits from external repository
+      - name: Get commits from last 24 hours
         id: get_commits
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用 GITHUB_TOKEN 进行认证
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SINCE_TIME: $(date -u -d "24 hours ago" "+%Y-%m-%dT%H:%M:%SZ")
         run: |
           echo "========== 获取目标仓库最近提交 ==========" 
-          API_URL="https://api.github.com/repos/${{ env.TARGET_REPO_OWNER }}/${{ env.TARGET_REPO_NAME }}/commits?sha=${{ env.TARGET_BRANCH }}&per_page=${{ env.CHECK_COMMITS_COUNT }}"
+          
+          # 获取过去24小时的提交，确保有足够的时间范围
+          SINCE_TIME=$(date -u -d "24 hours ago" "+%Y-%m-%dT%H:%M:%SZ")
+          API_URL="https://api.github.com/repos/${{ env.TARGET_REPO_OWNER }}/${{ env.TARGET_REPO_NAME }}/commits?sha=${{ env.TARGET_BRANCH }}&since=$SINCE_TIME"
           echo "API请求: $API_URL"
           
-          # 获取最近的提交
+          # 获取提交
           COMMITS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.v3+json" "$API_URL")
           
           # 检查API响应
-          if echo "$COMMITS" | jq -e 'type == "array"' > /dev/null; then
-            echo "成功获取提交信息"
-            
-            # 获取最新提交的SHA
-            LATEST_SHA=$(echo "$COMMITS" | jq -r '.[0].sha')
-            LATEST_MSG=$(echo "$COMMITS" | jq -r '.[0].commit.message' | head -n 1)
-            LATEST_AUTHOR=$(echo "$COMMITS" | jq -r '.[0].commit.author.name')
-            LATEST_URL=$(echo "$COMMITS" | jq -r '.[0].html_url')
-            COMMIT_TIME=$(echo "$COMMITS" | jq -r '.[0].commit.author.date')
-            
-            echo "最新提交SHA: $LATEST_SHA"
-            echo "提交信息: $LATEST_MSG"
-            echo "作者: $LATEST_AUTHOR"
-            echo "提交时间: $COMMIT_TIME"
-            
-            # 计算提交时间与当前时间的差距（小时）
-            COMMIT_TIMESTAMP=$(date -d "$COMMIT_TIME" +%s)
-            CURRENT_TIMESTAMP=$(date +%s)
-            HOURS_DIFF=$(( ($CURRENT_TIMESTAMP - $COMMIT_TIMESTAMP) / 3600 ))
-            
-            echo "距离现在: $HOURS_DIFF 小时"
-            
-            # 将信息保存到输出
-            echo "latest_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
-            echo "commit_msg=$LATEST_MSG" >> $GITHUB_OUTPUT
-            echo "author_name=$LATEST_AUTHOR" >> $GITHUB_OUTPUT
-            echo "commit_url=$LATEST_URL" >> $GITHUB_OUTPUT
-            echo "hours_diff=$HOURS_DIFF" >> $GITHUB_OUTPUT
-          else
-            echo "::error::获取提交信息失败. API响应:"
-            echo "$COMMITS"
+          if ! echo "$COMMITS" | jq -e 'type == "array"' > /dev/null; then
+            echo "::error::获取提交信息失败"
             exit 1
           fi
-
-      - name: Check if notification should be sent
-        id: check_notification
-        run: |
-          echo "========== 检查是否需要发送通知 ==========" 
           
-          # 检查提交时间，如果在过去6小时内，则发送通知
-          HOURS_THRESHOLD=6
-          HOURS_DIFF=${{ steps.get_commits.outputs.hours_diff }}
-          LATEST_SHA=${{ steps.get_commits.outputs.latest_sha }}
-          
-          # 创建已通知提交记录文件的路径
-          NOTIFIED_FILE=".github/notified_commits.txt"
-          
-          # 检查提交是否已经通知过
-          ALREADY_NOTIFIED=false
-          if [ -f "$NOTIFIED_FILE" ]; then
-            if grep -q "$LATEST_SHA" "$NOTIFIED_FILE"; then
-              ALREADY_NOTIFIED=true
-              echo "提交 $LATEST_SHA 已经通知过，不重复发送"
-            fi
-          else
-            # 如果文件不存在，创建目录
-            mkdir -p "$(dirname "$NOTIFIED_FILE")"
-            touch "$NOTIFIED_FILE"
-            echo "创建新的通知记录文件"
+          # 检查是否有提交
+          COMMITS_COUNT=$(echo "$COMMITS" | jq '. | length')
+          if [ "$COMMITS_COUNT" -eq 0 ]; then
+            echo "过去24小时没有新提交"
+            echo "has_new_commits=false" >> $GITHUB_OUTPUT
+            exit 0
           fi
           
-          # 判断是否需要发送通知
-          if [ "$HOURS_DIFF" -le "$HOURS_THRESHOLD" ] && [ "$ALREADY_NOTIFIED" = "false" ]; then
-            echo "最新提交在 $HOURS_DIFF 小时前，在阈值 $HOURS_THRESHOLD 小时内，且未通知过，将发送通知"
+          echo "成功获取到 $COMMITS_COUNT 条提交"
+          echo "has_new_commits=true" >> $GITHUB_OUTPUT
+          
+          # 获取最新提交信息
+          LATEST_SHA=$(echo "$COMMITS" | jq -r '.[0].sha')
+          LATEST_MSG=$(echo "$COMMITS" | jq -r '.[0].commit.message' | head -n 1)
+          LATEST_AUTHOR=$(echo "$COMMITS" | jq -r '.[0].commit.author.name')
+          LATEST_URL=$(echo "$COMMITS" | jq -r '.[0].html_url')
+          COMMIT_TIME=$(echo "$COMMITS" | jq -r '.[0].commit.author.date')
+          
+          echo "latest_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
+          echo "commit_msg=$LATEST_MSG" >> $GITHUB_OUTPUT
+          echo "author_name=$LATEST_AUTHOR" >> $GITHUB_OUTPUT
+          echo "commit_url=$LATEST_URL" >> $GITHUB_OUTPUT
+          echo "commit_time=$COMMIT_TIME" >> $GITHUB_OUTPUT
+
+      - name: Find commits within threshold
+        id: find_recent_commits
+        if: steps.get_commits.outputs.has_new_commits == 'true'
+        run: |
+          echo "========== 检查最近提交 ==========" 
+          
+          # 获取最近的提交时间
+          COMMIT_TIME="${{ steps.get_commits.outputs.commit_time }}"
+          COMMIT_TIMESTAMP=$(date -d "$COMMIT_TIME" +%s)
+          CURRENT_TIMESTAMP=$(date +%s)
+          
+          # 计算小时差
+          HOURS_DIFF=$(( ($CURRENT_TIMESTAMP - $COMMIT_TIMESTAMP) / 3600 ))
+          echo "最近提交距离现在: $HOURS_DIFF 小时"
+          
+          # 检查是否在阈值内
+          if [ "$HOURS_DIFF" -le "${{ env.HOURS_THRESHOLD }}" ]; then
+            echo "发现在阈值内的提交，需要发送通知"
             echo "should_notify=true" >> $GITHUB_OUTPUT
-            # 记录已通知的提交
-            echo "$LATEST_SHA" >> "$NOTIFIED_FILE"
-            # 保留最近的50条记录，避免文件过大
-            if [ $(wc -l < "$NOTIFIED_FILE") -gt 50 ]; then
-              echo "裁剪记录文件，只保留最近的50条记录"
-              tail -n 50 "$NOTIFIED_FILE" > "${NOTIFIED_FILE}.tmp" && mv "${NOTIFIED_FILE}.tmp" "$NOTIFIED_FILE"
-            fi
+            echo "hours_diff=$HOURS_DIFF" >> $GITHUB_OUTPUT
           else
-            if [ "$ALREADY_NOTIFIED" = "true" ]; then
-              echo "提交已经通知过，不重复发送"
-            else
-              echo "最新提交在 $HOURS_DIFF 小时前，超过阈值 $HOURS_THRESHOLD 小时，不发送通知"
-            fi
+            echo "没有在阈值内的提交，不需要发送通知"
             echo "should_notify=false" >> $GITHUB_OUTPUT
+            echo "hours_diff=$HOURS_DIFF" >> $GITHUB_OUTPUT
           fi
 
       - name: Send Bark notification
-        if: steps.check_notification.outputs.should_notify == 'true'
+        if: steps.find_recent_commits.outputs.should_notify == 'true'
         env:
           BARK_SERVER_URL: ${{ secrets.BARK_URL }} # 从 secrets 获取
           BARK_DEVICE_KEY: ${{ secrets.BARK_DEVICE_KEY }} # 从 secrets 获取
@@ -164,39 +138,26 @@ jobs:
             exit 1
           fi
 
-      - name: Commit notification record back to repository
-        if: steps.check_notification.outputs.should_notify == 'true'
-        run: |
-          echo "========== 提交通知记录到仓库 ==========" 
-          
-          # 配置 git 用户
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          # 检查是否有变更
-          if git diff --quiet .github/notified_commits.txt; then
-            echo "没有变更需要提交"
-          else
-            echo "检测到通知记录文件有变更，准备提交"
-            git add .github/notified_commits.txt
-            git commit -m "更新通知记录 [跳过 CI]"
-            git push
-            echo "成功提交通知记录到仓库"
-          fi
+
           
       - name: Summary
         run: |
           echo "========== 执行摘要 ==========" 
           echo "检查的仓库: ${{ env.TARGET_REPO_OWNER }}/${{ env.TARGET_REPO_NAME }}"
           echo "分支: ${{ env.TARGET_BRANCH }}"
-          echo "最新提交SHA: ${{ steps.get_commits.outputs.latest_sha }}"
-          echo "提交信息: ${{ steps.get_commits.outputs.commit_msg }}"
-          echo "作者: ${{ steps.get_commits.outputs.author_name }}"
-          echo "提交时间: 距离现在 ${{ steps.get_commits.outputs.hours_diff }} 小时"
-          echo "是否发送通知: ${{ steps.check_notification.outputs.should_notify }}"
           
-          if [ "${{ steps.check_notification.outputs.should_notify }}" == "true" ]; then
-            echo "通知已发送"
+          if [ "${{ steps.get_commits.outputs.has_new_commits }}" == "true" ]; then
+            echo "最新提交SHA: ${{ steps.get_commits.outputs.latest_sha }}"
+            echo "提交信息: ${{ steps.get_commits.outputs.commit_msg }}"
+            echo "作者: ${{ steps.get_commits.outputs.author_name }}"
+            echo "提交时间: 距离现在 ${{ steps.find_recent_commits.outputs.hours_diff || '0' }} 小时"
+            echo "是否发送通知: ${{ steps.find_recent_commits.outputs.should_notify || 'false' }}"
+            
+            if [ "${{ steps.find_recent_commits.outputs.should_notify }}" == "true" ]; then
+              echo "通知已发送"
+            else
+              echo "未发送通知 (提交时间超过阈值)"
+            fi
           else
-            echo "未发送通知 (提交时间超过阈值或已通知过)"
+            echo "过去24小时内没有新提交"
           fi
