@@ -13,144 +13,89 @@ jobs:
     env:
       TARGET_REPO_OWNER: "iterativv"
       TARGET_REPO_NAME: "NostalgiaForInfinity"
-      TARGET_BRANCH: "main"  # 改为 main 分支
-      LAST_SHA_FILE: "last_seen_sha.txt"  # 简化文件名
-      ARTIFACT_NAME: "repo-monitor-state"  # 简化artifact名称
-      # 工作目录环境变量，确保文件路径一致性
-      WORKSPACE: "${{ github.workspace }}"
+      TARGET_BRANCH: "main"  # 目标分支
+      CHECK_COMMITS_COUNT: "5"  # 检查最近的5条提交
 
     steps:
 
       - name: Checkout code (to access jq if needed, or for local tools)
         uses: actions/checkout@v4
 
-      - name: Download last seen SHA
-        id: download_artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ env.ARTIFACT_NAME }}
-          path: ${{ env.WORKSPACE }}
-        continue-on-error: true
-        # 首次运行时没有 artifact 是正常的，忽略错误
-        
-      - name: Debug artifact download
-        run: |
-          echo "========== 调试信息：Artifact 下载 ==========" 
-          echo "Artifact下载状态: ${{ steps.download_artifact.outcome }}"
-          echo "工作目录内容:"
-          ls -la ${{ env.WORKSPACE }}
-          echo "查找SHA文件:"
-          find ${{ env.WORKSPACE }} -name "${{ env.LAST_SHA_FILE }}" -type f || echo "SHA文件未找到（首次运行是正常的）"
-          
-          # 确保SHA文件有正确的权限
-          SHA_FILE_PATH="${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}"
-          if [ -f "$SHA_FILE_PATH" ]; then
-            echo "设置SHA文件权限"
-            chmod 644 "$SHA_FILE_PATH"
-            echo "SHA文件权限设置后:"
-            ls -la "$SHA_FILE_PATH"
-            echo "SHA文件内容: $(cat "$SHA_FILE_PATH" || echo '无法读取')"
-          fi
-
-      - name: Read last seen SHA from file
-        id: get_old_sha
-        run: |
-          SHA_FILE_PATH="${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}"
-          echo "========== 调试信息：读取SHA文件 ==========" 
-          echo "查找SHA文件位置: $SHA_FILE_PATH"
-          
-          if [ -f "$SHA_FILE_PATH" ]; then
-            OLD_SHA=$(cat "$SHA_FILE_PATH")
-            # 去除空白字符
-            OLD_SHA=$(echo "$OLD_SHA" | xargs)
-            echo "找到上次记录的SHA: $OLD_SHA"
-          else
-            OLD_SHA=""
-            echo "未找到SHA文件。首次运行时这是正常的，将创建新文件。"
-          fi
-          
-          # 输出到GITHUB_OUTPUT，供后续步骤使用
-          echo "old_sha=$OLD_SHA" >> $GITHUB_OUTPUT
-          echo "sha_file_path=$SHA_FILE_PATH" >> $GITHUB_OUTPUT
-
-      - name: Get latest commit SHA from external repository
-        id: get_new_sha
+      - name: Get recent commits from external repository
+        id: get_commits
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用 GITHUB_TOKEN 进行认证，以获得更高的 API 速率限制
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用 GITHUB_TOKEN 进行认证
         run: |
-          API_URL="https://api.github.com/repos/${{ env.TARGET_REPO_OWNER }}/${{ env.TARGET_REPO_NAME }}/commits/${{ env.TARGET_BRANCH }}"
-          echo "Fetching from API: $API_URL"
-          RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.v3+json" "$API_URL")
-
-          NEW_SHA=$(echo "$RESPONSE" | jq -r '.sha')
-          COMMIT_MSG_FULL=$(echo "$RESPONSE" | jq -r '.commit.message')
-          COMMIT_MSG_SUMMARY=$(echo "$COMMIT_MSG_FULL" | head -n 1)
-          PUSHER_NAME=$(echo "$RESPONSE" | jq -r '.commit.author.name') # API返回的是 author，不是 pusher
-          COMMIT_URL=$(echo "$RESPONSE" | jq -r '.html_url')
-
-          if [ -z "$NEW_SHA" ] || [ "$NEW_SHA" == "null" ]; then
-            echo "::error::Could not retrieve new SHA. API Response:"
-            echo "$RESPONSE"
-            echo "Trying to get default branch..."
-            
-            # 尝试获取仓库的默认分支
-            REPO_INFO=$(curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${{ env.TARGET_REPO_OWNER }}/${{ env.TARGET_REPO_NAME }}")
-            DEFAULT_BRANCH=$(echo "$REPO_INFO" | jq -r '.default_branch')
-            
-            if [ -n "$DEFAULT_BRANCH" ] && [ "$DEFAULT_BRANCH" != "null" ]; then
-              echo "Found default branch: $DEFAULT_BRANCH"
-              echo "Trying with default branch..."
-              RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${{ env.TARGET_REPO_OWNER }}/${{ env.TARGET_REPO_NAME }}/commits/$DEFAULT_BRANCH")
-              NEW_SHA=$(echo "$RESPONSE" | jq -r '.sha')
-              
-              if [ -n "$NEW_SHA" ] && [ "$NEW_SHA" != "null" ]; then
-                echo "Successfully got SHA from default branch"
-                # 更新环境变量
-                echo "TARGET_BRANCH=$DEFAULT_BRANCH" >> $GITHUB_ENV
-              else
-                echo "::error::Failed to get SHA from default branch"
-                exit 1
-              fi
-            else
-              echo "::error::Could not determine default branch"
-              exit 1
-            fi
-          fi
-
-          echo "Current latest SHA: $NEW_SHA"
-          echo "new_sha=$NEW_SHA" >> $GITHUB_OUTPUT
-          echo "commit_msg_summary<<EOF" >> $GITHUB_OUTPUT
-          echo "$COMMIT_MSG_SUMMARY" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          echo "pusher_name=$PUSHER_NAME" >> $GITHUB_OUTPUT
-          echo "commit_url=$COMMIT_URL" >> $GITHUB_OUTPUT
-
-      - name: Debug SHA values
-        run: |
-          echo "========== 调试信息：SHA比较 ==========" 
-          echo "旧SHA: '${{ steps.get_old_sha.outputs.old_sha }}'"
-          echo "新SHA: '${{ steps.get_new_sha.outputs.new_sha }}'"
-          echo "SHA是否不同? $([ "${{ steps.get_old_sha.outputs.old_sha }}" != "${{ steps.get_new_sha.outputs.new_sha }}" ] && echo "是" || echo "否")"
+          echo "========== 获取目标仓库最近提交 ==========" 
+          API_URL="https://api.github.com/repos/${{ env.TARGET_REPO_OWNER }}/${{ env.TARGET_REPO_NAME }}/commits?sha=${{ env.TARGET_BRANCH }}&per_page=${{ env.CHECK_COMMITS_COUNT }}"
+          echo "API请求: $API_URL"
           
-          SHA_FILE_PATH="${{ steps.get_old_sha.outputs.sha_file_path }}"
-          echo "SHA文件存在? $([ -f "$SHA_FILE_PATH" ] && echo "是" || echo "否")"
-          if [ -f "$SHA_FILE_PATH" ]; then
-            echo "SHA文件内容: $(cat $SHA_FILE_PATH)"
+          # 获取最近的提交
+          COMMITS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.v3+json" "$API_URL")
+          
+          # 检查API响应
+          if echo "$COMMITS" | jq -e 'type == "array"' > /dev/null; then
+            echo "成功获取提交信息"
+            
+            # 获取最新提交的SHA
+            LATEST_SHA=$(echo "$COMMITS" | jq -r '.[0].sha')
+            LATEST_MSG=$(echo "$COMMITS" | jq -r '.[0].commit.message' | head -n 1)
+            LATEST_AUTHOR=$(echo "$COMMITS" | jq -r '.[0].commit.author.name')
+            LATEST_URL=$(echo "$COMMITS" | jq -r '.[0].html_url')
+            COMMIT_TIME=$(echo "$COMMITS" | jq -r '.[0].commit.author.date')
+            
+            echo "最新提交SHA: $LATEST_SHA"
+            echo "提交信息: $LATEST_MSG"
+            echo "作者: $LATEST_AUTHOR"
+            echo "提交时间: $COMMIT_TIME"
+            
+            # 计算提交时间与当前时间的差距（小时）
+            COMMIT_TIMESTAMP=$(date -d "$COMMIT_TIME" +%s)
+            CURRENT_TIMESTAMP=$(date +%s)
+            HOURS_DIFF=$(( ($CURRENT_TIMESTAMP - $COMMIT_TIMESTAMP) / 3600 ))
+            
+            echo "距离现在: $HOURS_DIFF 小时"
+            
+            # 将信息保存到输出
+            echo "latest_sha=$LATEST_SHA" >> $GITHUB_OUTPUT
+            echo "commit_msg=$LATEST_MSG" >> $GITHUB_OUTPUT
+            echo "author_name=$LATEST_AUTHOR" >> $GITHUB_OUTPUT
+            echo "commit_url=$LATEST_URL" >> $GITHUB_OUTPUT
+            echo "hours_diff=$HOURS_DIFF" >> $GITHUB_OUTPUT
+          else
+            echo "::error::获取提交信息失败. API响应:"
+            echo "$COMMITS"
+            exit 1
           fi
 
-      - name: Compare SHAs and send Bark notification if new
-        # 发送通知条件：首次运行(无旧SHA)或SHA有变化
-        if: steps.get_old_sha.outputs.old_sha == '' || steps.get_old_sha.outputs.old_sha != steps.get_new_sha.outputs.new_sha
+      - name: Check if notification should be sent
+        id: check_notification
+        run: |
+          echo "========== 检查是否需要发送通知 ==========" 
+          
+          # 检查提交时间，如果在过去6小时内，则发送通知
+          HOURS_THRESHOLD=6
+          HOURS_DIFF=${{ steps.get_commits.outputs.hours_diff }}
+          
+          if [ "$HOURS_DIFF" -le "$HOURS_THRESHOLD" ]; then
+            echo "最新提交在 $HOURS_DIFF 小时前，在阈值 $HOURS_THRESHOLD 小时内，将发送通知"
+            echo "should_notify=true" >> $GITHUB_OUTPUT
+          else
+            echo "最新提交在 $HOURS_DIFF 小时前，超过阈值 $HOURS_THRESHOLD 小时，不发送通知"
+            echo "should_notify=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send Bark notification
+        if: steps.check_notification.outputs.should_notify == 'true'
         env:
           BARK_SERVER_URL: ${{ secrets.BARK_URL }} # 从 secrets 获取
           BARK_DEVICE_KEY: ${{ secrets.BARK_DEVICE_KEY }} # 从 secrets 获取
-          NEW_SHA: ${{ steps.get_new_sha.outputs.new_sha }}
-          COMMIT_MSG_SUMMARY: ${{ steps.get_new_sha.outputs.commit_msg_summary }}
-          PUSHER_NAME: ${{ steps.get_new_sha.outputs.pusher_name }}
-          COMMIT_URL: ${{ steps.get_new_sha.outputs.commit_url }}
+          LATEST_SHA: ${{ steps.get_commits.outputs.latest_sha }}
+          COMMIT_MSG: ${{ steps.get_commits.outputs.commit_msg }}
+          AUTHOR_NAME: ${{ steps.get_commits.outputs.author_name }}
+          COMMIT_URL: ${{ steps.get_commits.outputs.commit_url }}
         run: |
-          echo "New commit detected. Old SHA: ${{ steps.get_old_sha.outputs.old_sha }}, New SHA: $NEW_SHA"
-          echo "Sending Bark notification..."
+          echo "发现最近更新，发送通知..."
 
           if [ -z "$BARK_SERVER_URL" ] || [ -z "$BARK_DEVICE_KEY" ]; then
             echo "Error: BARK_URL or BARK_DEVICE_KEY secret not set."
@@ -158,9 +103,9 @@ jobs:
           fi
 
           BARK_TITLE_TEXT="GitHub: ${{ env.TARGET_REPO_OWNER }}/${{ env.TARGET_REPO_NAME }} Updated"
-          BARK_BODY_TEXT="Branch: ${{ env.TARGET_BRANCH }} by $PUSHER_NAME
-          Commit: $(echo "$NEW_SHA" | cut -c1-7)
-          Message: $COMMIT_MSG_SUMMARY"
+          BARK_BODY_TEXT="Branch: ${{ env.TARGET_BRANCH }} by $AUTHOR_NAME
+          Commit: $(echo "$LATEST_SHA" | cut -c1-7)
+          Message: $COMMIT_MSG"
 
           # URL 编码
           BARK_TITLE_ENCODED=$(printf %s "$BARK_TITLE_TEXT" | jq -sRr @uri)
@@ -186,80 +131,19 @@ jobs:
             exit 1
           fi
 
-      - name: Update last seen SHA file
-        id: update_sha_file
+      - name: Summary
         run: |
-          echo "========== 更新SHA文件 ==========" 
-          # 始终使用新SHA更新文件，无论是否发送了通知
-          # 这确保我们为下次运行保存最新的SHA
-          SHA_FILE_PATH="${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}"
+          echo "========== 执行摘要 ==========" 
+          echo "检查的仓库: ${{ env.TARGET_REPO_OWNER }}/${{ env.TARGET_REPO_NAME }}"
+          echo "分支: ${{ env.TARGET_BRANCH }}"
+          echo "最新提交SHA: ${{ steps.get_commits.outputs.latest_sha }}"
+          echo "提交信息: ${{ steps.get_commits.outputs.commit_msg }}"
+          echo "作者: ${{ steps.get_commits.outputs.author_name }}"
+          echo "提交时间: 距离现在 ${{ steps.get_commits.outputs.hours_diff }} 小时"
+          echo "是否发送通知: ${{ steps.check_notification.outputs.should_notify }}"
           
-          # 确保目录存在
-          mkdir -p "$(dirname "$SHA_FILE_PATH")"
-          
-          # 写入新SHA
-          echo "${{ steps.get_new_sha.outputs.new_sha }}" > "$SHA_FILE_PATH"
-          echo "已更新SHA文件: $SHA_FILE_PATH"
-          echo "新SHA值: ${{ steps.get_new_sha.outputs.new_sha }}"
-          
-          # 验证文件是否成功创建
-          if [ -f "$SHA_FILE_PATH" ]; then
-            echo "文件已创建。内容: $(cat $SHA_FILE_PATH)"
-            # 确保文件有正确的权限
-            chmod 644 "$SHA_FILE_PATH"
+          if [ "${{ steps.check_notification.outputs.should_notify }}" == "true" ]; then
+            echo "通知已发送"
           else
-            echo "错误: 写入后文件不存在!"
-            ls -la ${{ env.WORKSPACE }}
-            # 尝试在当前目录创建文件作为备份
-            echo "${{ steps.get_new_sha.outputs.new_sha }}" > "${{ env.LAST_SHA_FILE }}"
-            echo "在当前目录创建了备份文件"
+            echo "未发送通知 (提交时间超过阈值)"
           fi
-
-      - name: Verify file exists before upload
-        run: |
-          echo "========== 验证文件上传前状态 ==========" 
-          SHA_FILE_PATH="${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}"
-          
-          if [ -f "$SHA_FILE_PATH" ]; then
-            echo "文件存在于 $SHA_FILE_PATH 并准备上传"
-            ls -la "$SHA_FILE_PATH"
-            echo "文件内容: $(cat "$SHA_FILE_PATH")"
-          else
-            echo "错误: 上传前文件不存在于 $SHA_FILE_PATH!"
-            echo "检查当前目录..."
-            
-            # 确保目录存在
-            mkdir -p "$(dirname "$SHA_FILE_PATH")"
-            
-            if [ -f "${{ env.LAST_SHA_FILE }}" ]; then
-              echo "文件存在于当前目录，使用它"
-              cp "${{ env.LAST_SHA_FILE }}" "$SHA_FILE_PATH"
-            else
-              echo "创建包含当前SHA的文件作为备用方案"
-              echo "${{ steps.get_new_sha.outputs.new_sha }}" > "$SHA_FILE_PATH"
-            fi
-            
-            echo "创建后的文件状态:"
-            ls -la "$SHA_FILE_PATH"
-          fi
-
-      - name: Upload updated SHA file as artifact
-        id: upload_artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.ARTIFACT_NAME }}
-          path: ${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}
-          retention-days: 90
-          if-no-files-found: error  # 改为错误，确保文件存在
-          
-      - name: Verify artifact upload
-        run: |
-          echo "========== 验证Artifact上传 ==========" 
-          echo "Artifact上传状态: ${{ steps.upload_artifact.outcome }}"
-          echo "Artifact ID: ${{ steps.upload_artifact.outputs.artifact-id || '未获取到ID' }}"
-          
-          # 最终确认
-          echo "最终工作目录状态:"
-          ls -la ${{ env.WORKSPACE }}
-          echo "SHA文件最终状态:"
-          find ${{ env.WORKSPACE }} -name "${{ env.LAST_SHA_FILE }}" -exec ls -la {} \; -exec cat {} \; || echo "未找到SHA文件"
