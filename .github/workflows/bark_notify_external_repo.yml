@@ -22,6 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get recent commits from external repository
         id: get_commits
@@ -163,6 +164,26 @@ jobs:
             exit 1
           fi
 
+      - name: Commit notification record back to repository
+        if: steps.check_notification.outputs.should_notify == 'true'
+        run: |
+          echo "========== 提交通知记录到仓库 ==========" 
+          
+          # 配置 git 用户
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # 检查是否有变更
+          if git diff --quiet .github/notified_commits.txt; then
+            echo "没有变更需要提交"
+          else
+            echo "检测到通知记录文件有变更，准备提交"
+            git add .github/notified_commits.txt
+            git commit -m "更新通知记录 [跳过 CI]"
+            git push
+            echo "成功提交通知记录到仓库"
+          fi
+          
       - name: Summary
         run: |
           echo "========== 执行摘要 ==========" 
@@ -177,5 +198,5 @@ jobs:
           if [ "${{ steps.check_notification.outputs.should_notify }}" == "true" ]; then
             echo "通知已发送"
           else
-            echo "未发送通知 (提交时间超过阈值)"
+            echo "未发送通知 (提交时间超过阈值或已通知过)"
           fi
