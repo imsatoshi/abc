@@ -14,9 +14,9 @@ jobs:
       TARGET_REPO_OWNER: "iterativv"
       TARGET_REPO_NAME: "NostalgiaForInfinity"
       TARGET_BRANCH: "main"  # 改为 main 分支
-      LAST_SHA_FILE: "last_seen_sha_for_NostalgiaForInfinity.txt"
-      ARTIFACT_NAME: "nostalgiaforinfinity-monitor-state"
-      # 添加工作目录环境变量，确保文件路径一致性
+      LAST_SHA_FILE: "last_seen_sha.txt"  # 简化文件名
+      ARTIFACT_NAME: "repo-monitor-state"  # 简化artifact名称
+      # 工作目录环境变量，确保文件路径一致性
       WORKSPACE: "${{ github.workspace }}"
 
     steps:
@@ -39,28 +39,33 @@ jobs:
         
       - name: Debug artifact download
         run: |
-          echo "Artifact download status: ${{ steps.download_artifact.outcome }}"
-          echo "Files in workspace directory:"
+          echo "========== 调试信息：Artifact 下载 ==========" 
+          echo "Artifact下载状态: ${{ steps.download_artifact.outcome }}"
+          echo "工作目录内容:"
           ls -la ${{ env.WORKSPACE }}
-          echo "Looking for SHA file:"
-          find ${{ env.WORKSPACE }} -name "${{ env.LAST_SHA_FILE }}" -type f || echo "SHA file not found"
+          echo "查找SHA文件:"
+          find ${{ env.WORKSPACE }} -name "${{ env.LAST_SHA_FILE }}" -type f || echo "SHA文件未找到（首次运行是正常的）"
 
       - name: Read last seen SHA from file
         id: get_old_sha
         run: |
           SHA_FILE_PATH="${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}"
-          echo "Looking for SHA file at: $SHA_FILE_PATH"
+          echo "========== 调试信息：读取SHA文件 ==========" 
+          echo "查找SHA文件位置: $SHA_FILE_PATH"
           
           if [ -f "$SHA_FILE_PATH" ]; then
             OLD_SHA=$(cat "$SHA_FILE_PATH")
-            # Trim any whitespace
+            # 去除空白字符
             OLD_SHA=$(echo "$OLD_SHA" | xargs)
-            echo "Found last seen SHA: $OLD_SHA"
+            echo "找到上次记录的SHA: $OLD_SHA"
           else
             OLD_SHA=""
-            echo "No last seen SHA file found. This is normal for first run."
+            echo "未找到SHA文件。首次运行时这是正常的，将创建新文件。"
           fi
+          
+          # 输出到GITHUB_OUTPUT，供后续步骤使用
           echo "old_sha=$OLD_SHA" >> $GITHUB_OUTPUT
+          echo "SHA文件路径=$SHA_FILE_PATH" >> $GITHUB_OUTPUT
 
       - name: Get latest commit SHA from external repository
         id: get_new_sha
@@ -116,17 +121,20 @@ jobs:
 
       - name: Debug SHA values
         run: |
-          echo "Old SHA: '${{ steps.get_old_sha.outputs.old_sha }}'"
-          echo "New SHA: '${{ steps.get_new_sha.outputs.new_sha }}'"
-          echo "Are they different? $([ "${{ steps.get_old_sha.outputs.old_sha }}" != "${{ steps.get_new_sha.outputs.new_sha }}" ] && echo "Yes" || echo "No")"
-          echo "SHA file exists? $([ -f "${{ env.LAST_SHA_FILE }}" ] && echo "Yes" || echo "No")"
-          if [ -f "${{ env.LAST_SHA_FILE }}" ]; then
-            echo "SHA file content: $(cat ${{ env.LAST_SHA_FILE }})"
+          echo "========== 调试信息：SHA比较 ==========" 
+          echo "旧SHA: '${{ steps.get_old_sha.outputs.old_sha }}'"
+          echo "新SHA: '${{ steps.get_new_sha.outputs.new_sha }}'"
+          echo "SHA是否不同? $([ "${{ steps.get_old_sha.outputs.old_sha }}" != "${{ steps.get_new_sha.outputs.new_sha }}" ] && echo "是" || echo "否")"
+          
+          SHA_FILE_PATH="${{ steps.get_old_sha.outputs.SHA文件路径 }}"
+          echo "SHA文件存在? $([ -f "$SHA_FILE_PATH" ] && echo "是" || echo "否")"
+          if [ -f "$SHA_FILE_PATH" ]; then
+            echo "SHA文件内容: $(cat $SHA_FILE_PATH)"
           fi
 
       - name: Compare SHAs and send Bark notification if new
-        # Only send notification if old SHA exists and is different from new SHA
-        if: steps.get_old_sha.outputs.old_sha != '' && steps.get_old_sha.outputs.old_sha != steps.get_new_sha.outputs.new_sha
+        # 发送通知条件：首次运行(无旧SHA)或SHA有变化
+        if: steps.get_old_sha.outputs.old_sha == '' || steps.get_old_sha.outputs.old_sha != steps.get_new_sha.outputs.new_sha
         env:
           BARK_SERVER_URL: ${{ secrets.BARK_URL }} # 从 secrets 获取
           BARK_DEVICE_KEY: ${{ secrets.BARK_DEVICE_KEY }} # 从 secrets 获取
@@ -174,45 +182,57 @@ jobs:
 
       - name: Update last seen SHA file
         run: |
-          # Always update the SHA file with the new SHA, regardless of whether we sent a notification
-          # This ensures we have the latest SHA for the next run
+          echo "========== 更新SHA文件 ==========" 
+          # 始终使用新SHA更新文件，无论是否发送了通知
+          # 这确保我们为下次运行保存最新的SHA
           SHA_FILE_PATH="${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}"
-          echo "${{ steps.get_new_sha.outputs.new_sha }}" > "$SHA_FILE_PATH"
-          echo "Updated $SHA_FILE_PATH with SHA: ${{ steps.get_new_sha.outputs.new_sha }}"
           
-          # 检查文件是否存在
+          # 确保目录存在
+          mkdir -p "$(dirname "$SHA_FILE_PATH")"
+          
+          # 写入新SHA
+          echo "${{ steps.get_new_sha.outputs.new_sha }}" > "$SHA_FILE_PATH"
+          echo "已更新SHA文件: $SHA_FILE_PATH"
+          echo "新SHA值: ${{ steps.get_new_sha.outputs.new_sha }}"
+          
+          # 验证文件是否成功创建
           if [ -f "$SHA_FILE_PATH" ]; then
-            echo "File exists. Content: $(cat $SHA_FILE_PATH)"
-            # Ensure file has proper permissions
+            echo "文件已创建。内容: $(cat $SHA_FILE_PATH)"
+            # 确保文件有正确的权限
             chmod 644 "$SHA_FILE_PATH"
           else
-            echo "ERROR: File does not exist after writing!"
+            echo "错误: 写入后文件不存在!"
             ls -la ${{ env.WORKSPACE }}
             # 尝试在当前目录创建文件作为备份
             echo "${{ steps.get_new_sha.outputs.new_sha }}" > "${{ env.LAST_SHA_FILE }}"
-            echo "Created backup file in current directory"
+            echo "在当前目录创建了备份文件"
           fi
 
       - name: Verify file exists before upload
         run: |
+          echo "========== 验证文件上传前状态 ==========" 
           SHA_FILE_PATH="${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}"
           
           if [ -f "$SHA_FILE_PATH" ]; then
-            echo "File exists at $SHA_FILE_PATH and ready for upload"
+            echo "文件存在于 $SHA_FILE_PATH 并准备上传"
             ls -la "$SHA_FILE_PATH"
-            cat "$SHA_FILE_PATH"
+            echo "文件内容: $(cat "$SHA_FILE_PATH")"
           else
-            echo "ERROR: File does not exist at $SHA_FILE_PATH before upload!"
-            echo "Checking current directory..."
+            echo "错误: 上传前文件不存在于 $SHA_FILE_PATH!"
+            echo "检查当前目录..."
+            
+            # 确保目录存在
+            mkdir -p "$(dirname "$SHA_FILE_PATH")"
             
             if [ -f "${{ env.LAST_SHA_FILE }}" ]; then
-              echo "File exists in current directory, using it"
+              echo "文件存在于当前目录，使用它"
               cp "${{ env.LAST_SHA_FILE }}" "$SHA_FILE_PATH"
             else
-              echo "Creating file with current SHA as fallback"
+              echo "创建包含当前SHA的文件作为备用方案"
               echo "${{ steps.get_new_sha.outputs.new_sha }}" > "$SHA_FILE_PATH"
             fi
             
+            echo "创建后的文件状态:"
             ls -la "$SHA_FILE_PATH"
           fi
 
@@ -223,18 +243,18 @@ jobs:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}
           retention-days: 90  # 增加保留期限到最大值
-          if-no-files-found: error
+          if-no-files-found: warn  # 改为警告而非错误，避免任务失败
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Verify artifact upload
         run: |
-          echo "Artifact upload status: ${{ steps.upload_artifact.outcome }}"
-          echo "If the upload failed, the SHA won't be saved for the next run"
-          echo "Artifact ID: ${{ steps.upload_artifact.outputs.artifact-id }}"
+          echo "========== 验证Artifact上传 ==========" 
+          echo "Artifact上传状态: ${{ steps.upload_artifact.outcome }}"
+          echo "Artifact ID: ${{ steps.upload_artifact.outputs.artifact-id || '未获取到ID' }}"
           
           # 最终确认
-          echo "Final workspace state:"
+          echo "最终工作目录状态:"
           ls -la ${{ env.WORKSPACE }}
-          echo "SHA file final state:"
-          find ${{ env.WORKSPACE }} -name "${{ env.LAST_SHA_FILE }}" -exec ls -la {} \; -exec cat {} \; || echo "SHA file not found"
+          echo "SHA文件最终状态:"
+          find ${{ env.WORKSPACE }} -name "${{ env.LAST_SHA_FILE }}" -exec ls -la {} \; -exec cat {} \; || echo "未找到SHA文件"
