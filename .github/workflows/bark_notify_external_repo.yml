@@ -30,7 +30,7 @@ jobs:
 
       - name: Download last seen SHA
         id: download_artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v2
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.WORKSPACE }}
@@ -249,11 +249,10 @@ jobs:
 
       - name: Upload updated SHA file as artifact
         id: upload_artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v2
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}
-          retention-days: 90  # 增加保留期限到最大值
           if-no-files-found: error  # 改为错误，确保文件存在
           
       - name: Verify artifact upload
