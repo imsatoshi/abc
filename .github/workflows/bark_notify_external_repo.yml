@@ -65,7 +65,7 @@ jobs:
           
           # 输出到GITHUB_OUTPUT，供后续步骤使用
           echo "old_sha=$OLD_SHA" >> $GITHUB_OUTPUT
-          echo "SHA文件路径=$SHA_FILE_PATH" >> $GITHUB_OUTPUT
+          echo "sha_file_path=$SHA_FILE_PATH" >> $GITHUB_OUTPUT
 
       - name: Get latest commit SHA from external repository
         id: get_new_sha
@@ -126,7 +126,7 @@ jobs:
           echo "新SHA: '${{ steps.get_new_sha.outputs.new_sha }}'"
           echo "SHA是否不同? $([ "${{ steps.get_old_sha.outputs.old_sha }}" != "${{ steps.get_new_sha.outputs.new_sha }}" ] && echo "是" || echo "否")"
           
-          SHA_FILE_PATH="${{ steps.get_old_sha.outputs.SHA文件路径 }}"
+          SHA_FILE_PATH="${{ steps.get_old_sha.outputs.sha_file_path }}"
           echo "SHA文件存在? $([ -f "$SHA_FILE_PATH" ] && echo "是" || echo "否")"
           if [ -f "$SHA_FILE_PATH" ]; then
             echo "SHA文件内容: $(cat $SHA_FILE_PATH)"
