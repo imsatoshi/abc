@@ -21,20 +21,19 @@ jobs:
 
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40a3d6 # v2.8.1
+        uses: step-security/harden-runner@v2
         with:
           egress-policy: audit # TODO: change to 'egress-policy: block' after couple of runs
 
       - name: Checkout code (to access jq if needed, or for local tools)
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        uses: actions/checkout@v4
 
       - name: Download last seen SHA
         id: download_artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v3
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.WORKSPACE }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
         # 首次运行时没有 artifact 是正常的，忽略错误
         
@@ -250,14 +249,12 @@ jobs:
 
       - name: Upload updated SHA file as artifact
         id: upload_artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}
           retention-days: 90  # 增加保留期限到最大值
           if-no-files-found: error  # 改为错误，确保文件存在
-          overwrite: true  # 确保覆盖现有的 artifact
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Verify artifact upload
         run: |
