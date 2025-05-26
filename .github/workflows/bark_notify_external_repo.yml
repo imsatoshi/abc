@@ -34,6 +34,7 @@ jobs:
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.WORKSPACE }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
         # 首次运行时没有 artifact 是正常的，忽略错误
         
@@ -45,6 +46,16 @@ jobs:
           ls -la ${{ env.WORKSPACE }}
           echo "查找SHA文件:"
           find ${{ env.WORKSPACE }} -name "${{ env.LAST_SHA_FILE }}" -type f || echo "SHA文件未找到（首次运行是正常的）"
+          
+          # 确保SHA文件有正确的权限
+          SHA_FILE_PATH="${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}"
+          if [ -f "$SHA_FILE_PATH" ]; then
+            echo "设置SHA文件权限"
+            chmod 644 "$SHA_FILE_PATH"
+            echo "SHA文件权限设置后:"
+            ls -la "$SHA_FILE_PATH"
+            echo "SHA文件内容: $(cat "$SHA_FILE_PATH" || echo '无法读取')"
+          fi
 
       - name: Read last seen SHA from file
         id: get_old_sha
@@ -181,6 +192,7 @@ jobs:
           fi
 
       - name: Update last seen SHA file
+        id: update_sha_file
         run: |
           echo "========== 更新SHA文件 ==========" 
           # 始终使用新SHA更新文件，无论是否发送了通知
@@ -243,9 +255,9 @@ jobs:
           name: ${{ env.ARTIFACT_NAME }}
           path: ${{ env.WORKSPACE }}/${{ env.LAST_SHA_FILE }}
           retention-days: 90  # 增加保留期限到最大值
-          if-no-files-found: warn  # 改为警告而非错误，避免任务失败
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          if-no-files-found: error  # 改为错误，确保文件存在
+          overwrite: true  # 确保覆盖现有的 artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Verify artifact upload
         run: |
