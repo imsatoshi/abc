@@ -212,3 +212,142 @@ Second line"
     # The URL should be encoded in the url= parameter
     [[ "$output" == *"url=https%3A%2F%2Fgithub.com%2Ftest%2Frepo%3Fquery%3D1"* ]]
 }
+
+@test "send_notification returns HTTP status code" {
+    # Save original PATH
+    local old_path="$PATH"
+    local mock_dir
+    mock_dir=$(mktemp -d)
+
+    # Create mock curl that returns a specific HTTP code
+    cat > "$mock_dir/curl" << 'EOF'
+#!/bin/bash
+# Return 200 status code
+echo "200"
+EOF
+    chmod +x "$mock_dir/curl"
+
+    PATH="$mock_dir:$PATH"
+    run send_notification "https://example.com/test"
+    PATH="$old_path"
+    rm -rf "$mock_dir"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "200" ]
+}
+
+@test "send_notification returns error code on failure" {
+    local old_path="$PATH"
+    local mock_dir
+    mock_dir=$(mktemp -d)
+
+    # Create mock curl that returns 500 error
+    cat > "$mock_dir/curl" << 'EOF'
+#!/bin/bash
+echo "500"
+EOF
+    chmod +x "$mock_dir/curl"
+
+    PATH="$mock_dir:$PATH"
+    run send_notification "https://example.com/test"
+    PATH="$old_path"
+    rm -rf "$mock_dir"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "500" ]
+}
+
+@test "main fails when validate_env fails" {
+    unset BARK_SERVER_URL
+    run main
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"BARK_SERVER_URL"* ]]
+}
+
+@test "main succeeds with mocked successful curl" {
+    local old_path="$PATH"
+    local mock_dir
+    mock_dir=$(mktemp -d)
+
+    # Create mock curl that returns 200
+    cat > "$mock_dir/curl" << 'EOF'
+#!/bin/bash
+echo "200"
+EOF
+    chmod +x "$mock_dir/curl"
+
+    PATH="$mock_dir:$PATH"
+    run main
+    PATH="$old_path"
+    rm -rf "$mock_dir"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"successfully"* ]]
+}
+
+@test "main fails when curl returns non-200" {
+    local old_path="$PATH"
+    local mock_dir
+    mock_dir=$(mktemp -d)
+
+    # Create mock curl that returns 500
+    cat > "$mock_dir/curl" << 'EOF'
+#!/bin/bash
+echo "500"
+EOF
+    chmod +x "$mock_dir/curl"
+
+    PATH="$mock_dir:$PATH"
+    run main
+    PATH="$old_path"
+    rm -rf "$mock_dir"
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Error"* ]]
+    [[ "$output" == *"500"* ]]
+}
+
+@test "build_body handles empty SHA gracefully" {
+    export LATEST_SHA=""
+    run build_body
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Commit:"* ]]
+}
+
+@test "build_title handles special characters in repo name" {
+    export TARGET_REPO_OWNER="owner-with-dashes"
+    export TARGET_REPO_NAME="repo.with.dots"
+    run build_title
+    [ "$status" -eq 0 ]
+    [ "$output" = "GitHub: owner-with-dashes/repo.with.dots Updated" ]
+}
+
+@test "url_encode handles plus sign" {
+    run url_encode "a+b"
+    [ "$status" -eq 0 ]
+    [ "$output" = "a%2Bb" ]
+}
+
+@test "url_encode handles hash symbol" {
+    run url_encode "test#anchor"
+    [ "$status" -eq 0 ]
+    [ "$output" = "test%23anchor" ]
+}
+
+@test "build_bark_url includes all required parameters" {
+    run build_bark_url "Title" "Body" "https://example.com"
+    [ "$status" -eq 0 ]
+    # Check all required Bark parameters are present
+    [[ "$output" == *"title="* ]]
+    [[ "$output" == *"url="* ]]
+    [[ "$output" == *"group=GitHubUpdates"* ]]
+    [[ "$output" == *"copy=1"* ]]
+    [[ "$output" == *"isArchive=1"* ]]
+}
+
+@test "validate_env fails when AUTHOR_NAME is missing" {
+    unset AUTHOR_NAME
+    run validate_env
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"AUTHOR_NAME"* ]]
+}

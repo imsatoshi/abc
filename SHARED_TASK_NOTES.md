@@ -1,23 +1,18 @@
 # Shared Task Notes - Unit Test Coverage
 
 ## Current Status
-Tests passing: 52/52
+Tests passing: 75/75
 
-## What Was Done This Iteration
-- Added 12 more unit tests for better coverage:
-  - Missing validate_env cases: COMMIT_MSG, COMMIT_URL, TARGET_REPO_OWNER, TARGET_REPO_NAME, TARGET_BRANCH
-  - Special character encoding: unicode, quotes, question marks, equals
-  - Edge cases: multiline commit messages, special chars in title/body
-- Added CI workflow `.github/workflows/test.yml` to run tests on PR/push
+## Coverage Summary
+All functions in the extracted scripts now have test coverage:
+- `find_recent_commits.sh`: validate_env, calculate_hours_diff (success + error), should_notify, output_result, main
+- `get_commits.sh`: validate_env, output_result, parse_commits, get_commits (mocked curl), main
+- `send_bark_notification.sh`: validate_env, build_title, build_body, url_encode, build_bark_url, send_notification (mocked curl), main (success + failure)
 
-## Next Steps for Coverage
-1. **Refactor workflow to use extracted scripts** - The workflow `.github/workflows/bark_notify_external_repo.yml` still has inline bash. Updating it to call the extracted scripts would:
-   - Make the workflow easier to maintain
-   - Allow all code paths to be tested
+## Remaining Coverage Gaps
+1. **GitHub workflow inline bash** - The workflow `.github/workflows/bark_notify_external_repo.yml` still has inline bash that cannot be unit tested. Consider extracting to scripts for full coverage.
 
-2. **Add integration tests with mocked curl** - Test `send_notification` and `get_commits` functions that make HTTP calls. Could use a mock server or stub curl.
-
-3. **Test main() functions directly** - The main() functions are tested implicitly through the component functions, but could add explicit end-to-end tests.
+2. **Edge cases for get_commits()** - The `get_commits` function's error path when `since_time` calculation fails is not tested (difficult to mock reliably).
 
 ## Running Tests
 ```bash

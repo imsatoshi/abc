@@ -108,3 +108,97 @@ teardown() {
     # Just verify it returns a number
     [[ "$output" =~ ^[0-9]+$ ]]
 }
+
+@test "calculate_hours_diff fails with invalid timestamp" {
+    # Create a mock environment where date parsing fails
+    # Save the original PATH
+    local old_path="$PATH"
+
+    # Create a temp directory for mocked commands
+    local mock_dir
+    mock_dir=$(mktemp -d)
+
+    # Create mock date that always fails
+    cat > "$mock_dir/date" << 'EOF'
+#!/bin/bash
+exit 1
+EOF
+    chmod +x "$mock_dir/date"
+
+    # Create mock gdate that always fails
+    cat > "$mock_dir/gdate" << 'EOF'
+#!/bin/bash
+exit 1
+EOF
+    chmod +x "$mock_dir/gdate"
+
+    # Override PATH to use mock commands first
+    PATH="$mock_dir:$PATH"
+
+    run calculate_hours_diff "invalid-timestamp"
+
+    # Restore PATH
+    PATH="$old_path"
+    rm -rf "$mock_dir"
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Failed to parse commit time"* ]]
+}
+
+@test "validate_env fails when both variables are missing" {
+    unset COMMIT_TIME HOURS_THRESHOLD
+    run validate_env
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"COMMIT_TIME"* ]]
+    [[ "$output" == *"HOURS_THRESHOLD"* ]]
+}
+
+@test "main exits with error when validate_env fails" {
+    unset COMMIT_TIME HOURS_THRESHOLD
+    run main
+    [ "$status" -eq 1 ]
+}
+
+@test "main succeeds with valid environment" {
+    # Skip this test on systems without date support
+    if ! date -d "2024-01-15T10:00:00Z" +%s >/dev/null 2>&1 && \
+       ! date -j -f "%Y-%m-%dT%H:%M:%SZ" "2024-01-15T10:00:00Z" +%s >/dev/null 2>&1; then
+        skip "System doesn't support required date format parsing"
+    fi
+
+    export COMMIT_TIME=$(date -u "+%Y-%m-%dT%H:%M:%SZ")
+    export HOURS_THRESHOLD="6"
+    unset GITHUB_OUTPUT
+
+    run main
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"should_notify=true"* ]]
+}
+
+@test "main outputs correct result when commit is too old" {
+    # Skip this test on systems without date support
+    if ! date -d "2024-01-15T10:00:00Z" +%s >/dev/null 2>&1 && \
+       ! date -j -f "%Y-%m-%dT%H:%M:%SZ" "2024-01-15T10:00:00Z" +%s >/dev/null 2>&1; then
+        skip "System doesn't support required date format parsing"
+    fi
+
+    # Use a very old timestamp
+    export COMMIT_TIME="2020-01-01T00:00:00Z"
+    export HOURS_THRESHOLD="6"
+    unset GITHUB_OUTPUT
+
+    run main
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"should_notify=false"* ]]
+}
+
+@test "output_result appends to existing GITHUB_OUTPUT file" {
+    export GITHUB_OUTPUT=$(mktemp)
+    echo "existing=value" > "$GITHUB_OUTPUT"
+    output_result "new_key" "new_value"
+    local content
+    content=$(cat "$GITHUB_OUTPUT")
+    [[ "$content" == *"existing=value"* ]]
+    [[ "$content" == *"new_key=new_value"* ]]
+    rm -f "$GITHUB_OUTPUT"
+}
