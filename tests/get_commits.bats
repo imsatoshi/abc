@@ -144,3 +144,112 @@ teardown() {
     [[ "$output" == *"latest_sha=first123"* ]]
     [[ "$output" == *"commit_msg=First commit"* ]]
 }
+
+@test "output_result appends to existing GITHUB_OUTPUT file" {
+    export GITHUB_OUTPUT=$(mktemp)
+    echo "existing=value" > "$GITHUB_OUTPUT"
+    output_result "new_key" "new_value"
+    local content
+    content=$(cat "$GITHUB_OUTPUT")
+    [[ "$content" == *"existing=value"* ]]
+    [[ "$content" == *"new_key=new_value"* ]]
+    rm -f "$GITHUB_OUTPUT"
+}
+
+@test "parse_commits handles commit with special characters in message" {
+    local commits='[
+        {
+            "sha": "abc123",
+            "commit": {
+                "message": "Fix: handle \"quotes\" & ampersands",
+                "author": {"name": "Test Author", "date": "2024-01-15T10:00:00Z"}
+            },
+            "html_url": "https://github.com/test/repo/commit/abc123"
+        }
+    ]'
+
+    unset GITHUB_OUTPUT
+    run parse_commits "$commits"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"has_new_commits=true"* ]]
+}
+
+@test "parse_commits handles null author name gracefully" {
+    local commits='[
+        {
+            "sha": "abc123",
+            "commit": {
+                "message": "Test commit",
+                "author": {"name": null, "date": "2024-01-15T10:00:00Z"}
+            },
+            "html_url": "https://github.com/test/repo/commit/abc123"
+        }
+    ]'
+
+    unset GITHUB_OUTPUT
+    run parse_commits "$commits"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"has_new_commits=true"* ]]
+    [[ "$output" == *"author_name=null"* ]]
+}
+
+@test "main fails when validate_env fails" {
+    unset GH_TOKEN
+    run main
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"GH_TOKEN"* ]]
+}
+
+@test "get_commits constructs correct API URL" {
+    # Save original curl
+    local old_path="$PATH"
+    local mock_dir
+    mock_dir=$(mktemp -d)
+
+    # Create mock curl that captures the URL
+    cat > "$mock_dir/curl" << 'EOF'
+#!/bin/bash
+# Find the URL argument (should be last non-flag arg)
+for arg in "$@"; do
+    if [[ "$arg" == https://* ]]; then
+        echo "$arg" >&2
+        echo "[]"
+        exit 0
+    fi
+done
+echo "[]"
+EOF
+    chmod +x "$mock_dir/curl"
+
+    PATH="$mock_dir:$PATH"
+    run get_commits 2>&1
+    PATH="$old_path"
+    rm -rf "$mock_dir"
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"api.github.com"* ]]
+    [[ "$output" == *"test-owner"* ]]
+    [[ "$output" == *"test-repo"* ]]
+    [[ "$output" == *"sha=main"* ]]
+}
+
+@test "parse_commits writes to GITHUB_OUTPUT when set" {
+    local commits='[
+        {
+            "sha": "abc123def456",
+            "commit": {
+                "message": "Test commit",
+                "author": {"name": "Test Author", "date": "2024-01-15T10:30:00Z"}
+            },
+            "html_url": "https://github.com/test/repo/commit/abc123"
+        }
+    ]'
+
+    export GITHUB_OUTPUT=$(mktemp)
+    parse_commits "$commits"
+    local content
+    content=$(cat "$GITHUB_OUTPUT")
+    [[ "$content" == *"has_new_commits=true"* ]]
+    [[ "$content" == *"latest_sha=abc123def456"* ]]
+    rm -f "$GITHUB_OUTPUT"
+}
