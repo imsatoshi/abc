@@ -1,26 +1,23 @@
 # Shared Task Notes - Unit Test Coverage
 
 ## Current Status
-Tests passing: 40/40
+Tests passing: 52/52
 
 ## What Was Done This Iteration
-- Extracted 3 bash scripts from the GitHub Actions workflow for testability:
-  - `scripts/get_commits.sh` - Fetches commits from GitHub API
-  - `scripts/find_recent_commits.sh` - Checks if commits are within time threshold
-  - `scripts/send_bark_notification.sh` - Sends notifications via Bark
-- Created comprehensive bats unit tests for all extracted functions
-- Fixed timezone handling issue in date parsing (BSD date requires TZ=UTC)
+- Added 12 more unit tests for better coverage:
+  - Missing validate_env cases: COMMIT_MSG, COMMIT_URL, TARGET_REPO_OWNER, TARGET_REPO_NAME, TARGET_BRANCH
+  - Special character encoding: unicode, quotes, question marks, equals
+  - Edge cases: multiline commit messages, special chars in title/body
+- Added CI workflow `.github/workflows/test.yml` to run tests on PR/push
 
 ## Next Steps for Coverage
-1. **Update workflow to use extracted scripts** - The workflow still has inline bash. Refactor `.github/workflows/bark_notify_external_repo.yml` to call the extracted scripts instead.
+1. **Refactor workflow to use extracted scripts** - The workflow `.github/workflows/bark_notify_external_repo.yml` still has inline bash. Updating it to call the extracted scripts would:
+   - Make the workflow easier to maintain
+   - Allow all code paths to be tested
 
-2. **Add integration tests** - Current tests are unit tests. Could add integration tests that mock the curl calls.
+2. **Add integration tests with mocked curl** - Test `send_notification` and `get_commits` functions that make HTTP calls. Could use a mock server or stub curl.
 
-3. **Add edge case tests**:
-   - `get_commits.sh`: Test API rate limiting handling, network errors
-   - `send_bark_notification.sh`: Test with special characters in commit messages
-
-4. **CI/CD setup** - Add a GitHub Actions workflow to run tests on PR/push
+3. **Test main() functions directly** - The main() functions are tested implicitly through the component functions, but could add explicit end-to-end tests.
 
 ## Running Tests
 ```bash
