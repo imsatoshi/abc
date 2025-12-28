@@ -129,3 +129,86 @@ line2"
     [ "$status" -eq 0 ]
     [[ "$output" == *"Body%20with%20spaces"* ]]
 }
+
+@test "validate_env fails when COMMIT_MSG is missing" {
+    unset COMMIT_MSG
+    run validate_env
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"COMMIT_MSG"* ]]
+}
+
+@test "validate_env fails when COMMIT_URL is missing" {
+    unset COMMIT_URL
+    run validate_env
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"COMMIT_URL"* ]]
+}
+
+@test "validate_env fails when TARGET_REPO_OWNER is missing" {
+    unset TARGET_REPO_OWNER
+    run validate_env
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"TARGET_REPO_OWNER"* ]]
+}
+
+@test "validate_env fails when TARGET_REPO_NAME is missing" {
+    unset TARGET_REPO_NAME
+    run validate_env
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"TARGET_REPO_NAME"* ]]
+}
+
+@test "validate_env fails when TARGET_BRANCH is missing" {
+    unset TARGET_BRANCH
+    run validate_env
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"TARGET_BRANCH"* ]]
+}
+
+@test "url_encode encodes unicode characters" {
+    run url_encode "测试"
+    [ "$status" -eq 0 ]
+    # Chinese characters are encoded as %E6%B5%8B%E8%AF%95
+    [[ "$output" == *"%"* ]]
+}
+
+@test "url_encode encodes quotes" {
+    run url_encode "test \"quoted\" text"
+    [ "$status" -eq 0 ]
+    [ "$output" = "test%20%22quoted%22%20text" ]
+}
+
+@test "url_encode encodes question mark and equals" {
+    run url_encode "key=value?query"
+    [ "$status" -eq 0 ]
+    [ "$output" = "key%3Dvalue%3Fquery" ]
+}
+
+@test "build_body handles commit message with special characters" {
+    export COMMIT_MSG="Fix bug: handle \"quotes\" & special chars"
+    run build_body
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Fix bug: handle \"quotes\" & special chars"* ]]
+}
+
+@test "build_body handles multiline commit message" {
+    export COMMIT_MSG="First line
+Second line"
+    run build_body
+    [ "$status" -eq 0 ]
+    # Should include the message as-is
+    [[ "$output" == *"First line"* ]]
+}
+
+@test "build_bark_url encodes special characters in title" {
+    run build_bark_url "Title with & special" "Body" "https://example.com"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Title%20with%20%26%20special"* ]]
+}
+
+@test "build_bark_url encodes URL in commit_url parameter" {
+    run build_bark_url "Title" "Body" "https://github.com/test/repo?query=1"
+    [ "$status" -eq 0 ]
+    # The URL should be encoded in the url= parameter
+    [[ "$output" == *"url=https%3A%2F%2Fgithub.com%2Ftest%2Frepo%3Fquery%3D1"* ]]
+}
